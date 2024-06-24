@@ -335,9 +335,10 @@ cmake --build .
 Most of the information found here has been discovered by reverse engineering the Android APK and spoofing the traffic between the app and dongle.
 
 To reverse engineer the app, follow the following steps:
-* Download the [`JURA J.O.E.®`](https://play.google.com/store/apps/details?id=ch.toptronic.joe&hl=de&gl=US) app from the Google Play Store. For this, you can use, for example, the [APK DOWNLOADER from  Hamidreza Moradi](https://github.com/HamidrezaMoradi/APK-Downloader).
-* Once you have the APK, you can use [JADX](https://github.com/skylot/jadx) too. Most of the code is written in Java, but there are parts written in Kotlin, which will not be able to be decompiled from Java byte code.
-* In JADEX have a look at the `resources/assets/machinefiles` directory, where you can find all machine files describing individual coffee makers and their available functions.
+* Download the [`JURA J.O.E.®`](https://play.google.com/store/apps/details?id=ch.toptronic.joe&hl=de&gl=US) app from the Google Play Store. For this, you can use, for example, the [APK Pure](https://apkpure.net/j-o-e-%C2%AE/ch.toptronic.joe).
+* Once downloaded unzip the `J.O.E.®_4.2.1_APKPure.xapk` if you downloaded it from a source outside the Google Play Store and then again unzip the `ch.toptronic.joe.apk`. If you downloaded it directly from Google Play, you can skip the first step.
+* Take a look into `assets/documents/xml` (`resources/assets/machinefiles` on older versins of the app). There you find all machine files describing individual coffee makers and their available functions.
+* Once you have the APK, you can also use [JADX](https://github.com/skylot/jadx). Most of the code is written in Java, but there are parts written in Kotlin, which will not be able to be decompiled from Java byte code so nicely.
 
 ## License and Copyright Notice
 This piece of software uses the following other libraries and dependencies:
