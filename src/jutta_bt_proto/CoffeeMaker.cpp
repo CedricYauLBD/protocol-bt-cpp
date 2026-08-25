@@ -351,8 +351,8 @@ void CoffeeMaker::request_coffee() {
     write(RELEVANT_UUIDS.START_PRODUCT_CHARACTERISTIC_UUID, command, true, false);
 }
 
-void CoffeeMaker::request_coffee(const Product& product) {
-    const std::string commandHexStr = product.to_bt_command();
+void CoffeeMaker::request_coffee(const Product& product, const Product::BrewOptions& options) {
+    const std::string commandHexStr = product.to_bt_command(options);
     const std::vector<uint8_t> command = from_hex_string(commandHexStr);
     write(RELEVANT_UUIDS.START_PRODUCT_CHARACTERISTIC_UUID, command, true, true);
 }

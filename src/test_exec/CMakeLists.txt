@@ -18,4 +18,12 @@ if(JUTTA_BT_PROTO_BUILD_TEST_EXEC)
     add_executable(${EXECUTABLE_NAME} ${EXECUTABLE_MAIN})
     target_link_libraries(${EXECUTABLE_NAME} PRIVATE logger bt jutta_bt_proto)
     set_property(SOURCE ${EXECUTABLE_MAIN} PROPERTY COMPILE_DEFINITIONS)
+
+    # Brew CLI
+    set(EXECUTABLE_NAME "jura_brew")
+    set(EXECUTABLE_MAIN "brew.cpp")
+
+    add_executable(${EXECUTABLE_NAME} ${EXECUTABLE_MAIN})
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE logger bt jutta_bt_proto)
+    set_property(SOURCE ${EXECUTABLE_MAIN} PROPERTY COMPILE_DEFINITIONS)
 endif()

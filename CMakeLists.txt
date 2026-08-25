@@ -71,6 +71,10 @@ conan_cmake_configure(REQUIRES catch2/2.13.8
                       GENERATORS cmake_find_package
                       BUILD missing)
 conan_cmake_autodetect(settings)
+# This system's gcc/clang is newer than conan 1.x's known settings.yml compiler
+# versions (max 12.2 for gcc). Cap the reported version for package matching;
+# the actual system compiler is still used to build from source.
+list(TRANSFORM settings REPLACE "^compiler.version=.*" "compiler.version=12")
 conan_cmake_install(PATH_OR_REFERENCE .
                     BUILD missing
                     REMOTE conancenter

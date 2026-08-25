@@ -165,7 +165,7 @@ class CoffeeMaker {
      **/
     void write_tx(const std::string& s);
     void request_coffee();
-    void request_coffee(const Product& product);
+    void request_coffee(const Product& product, const Product::BrewOptions& options = {});
     /**
      * Requests product or maintenance statistics.
      * On success the appropriate event gets triggered inside Joe.

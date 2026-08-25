@@ -16,32 +16,32 @@
 //---------------------------------------------------------------------------
 namespace jutta_bt_proto {
 //---------------------------------------------------------------------------
-void ItemsOption::to_bt_command(std::vector<std::string>& command) const {
+void ItemsOption::to_bt_command(std::vector<std::string>& command, const std::optional<std::string>& override) const {
     if (argument[0] == 'F') {
         std::string offsetStr = argument.substr(1);
         std::istringstream iss(offsetStr);
         size_t offset = 0;
         iss >> offset;
-        command[offset - 1] = defaultValue;
+        command[offset - 1] = override.value_or(defaultValue);
     } else {
         SPDLOG_ERROR("Invalid argument when converting to a BT command '{}'", argument);
     }
 }
 
-void MinMaxOption::to_bt_command(std::vector<std::string>& command) const {
+void MinMaxOption::to_bt_command(std::vector<std::string>& command, std::optional<uint8_t> override) const {
     if (argument[0] == 'F') {
         std::string offsetStr = argument.substr(1);
         std::istringstream iss(offsetStr);
         size_t offset = 0;
         iss >> offset;
-        uint8_t v = value / step;
+        uint8_t v = override.value_or(value) / step;
         command[offset - 1] = to_hex_string(std::vector<uint8_t>{v});
     } else {
         SPDLOG_ERROR("Invalid argument when converting to a BT command '{}'", argument);
     }
 }
 
-std::string Product::to_bt_command() const {
+std::string Product::to_bt_command(const BrewOptions& options) const {
     std::vector<std::string> command;
     command.resize(17);
     for (std::string& s : command) {
@@ -49,22 +49,24 @@ std::string Product::to_bt_command() const {
     }
 
     if (strength) {
-        strength->to_bt_command(command);
+        strength->to_bt_command(command, options.strength);
     }
 
     if (temperature) {
-        temperature->to_bt_command(command);
+        temperature->to_bt_command(command, options.temperature);
     }
 
     if (waterAmount) {
-        waterAmount->to_bt_command(command);
+        waterAmount->to_bt_command(command, options.waterAmount);
     }
 
     if (milkFoamAmount) {
-        milkFoamAmount->to_bt_command(command);
+        milkFoamAmount->to_bt_command(command, options.milkFoamAmount);
     }
 
-    // TODO: Add GRINDER_FREENESS
+    if (grinderRatio) {
+        grinderRatio->to_bt_command(command, options.grinderRatio);
+    }
 
     command[0] = code;
 
@@ -158,7 +160,14 @@ void load_products(std::vector<Product>* products, tinyxml2::XMLElement* joe) {
             milkFoamAmount = load_min_max_option(milkFoamAmountXml);
         }
 
-        products->emplace_back(std::move(name), std::move(code), std::move(strength), std::move(temperature), std::move(waterAmount), std::move(milkFoamAmount));
+        // Grinder ratio (which hopper(s) beans are drawn from, on dual-hopper machines):
+        std::optional<ItemsOption> grinderRatio;
+        const tinyxml2::XMLElement* grinderRatioXml = e->FirstChildElement("GRINDER_RATIO");
+        if (grinderRatioXml) {
+            grinderRatio = load_items_option(grinderRatioXml);
+        }
+
+        products->emplace_back(std::move(name), std::move(code), std::move(strength), std::move(temperature), std::move(waterAmount), std::move(milkFoamAmount), std::move(grinderRatio));
     }
 }
 

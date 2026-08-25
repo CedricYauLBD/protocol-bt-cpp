@@ -42,7 +42,11 @@ struct ItemsOption {
                                                                                                  defaultValue(std::move(defaultValue)),
                                                                                                  items(std::move(items)) {}
 
-    void to_bt_command(std::vector<std::string>& command) const;
+    /**
+     * Writes this option's value into the command. If `override` is set, its raw
+     * hex Value (as found in the ITEM list) is used instead of defaultValue.
+     **/
+    void to_bt_command(std::vector<std::string>& command, const std::optional<std::string>& override = std::nullopt) const;
 } __attribute__((aligned(128)));
 
 struct MinMaxOption {
@@ -58,7 +62,11 @@ struct MinMaxOption {
                                                                                                   max(max),
                                                                                                   step(step) {}
 
-    void to_bt_command(std::vector<std::string>& command) const;
+    /**
+     * Writes this option's value into the command. If `override` is set, it is used
+     * (in the same raw units as value/min/max/step) instead of the default `value`.
+     **/
+    void to_bt_command(std::vector<std::string>& command, std::optional<uint8_t> override = std::nullopt) const;
 } __attribute__((aligned(64)));
 
 struct Product {
@@ -69,17 +77,34 @@ struct Product {
     std::optional<ItemsOption> temperature;
     std::optional<MinMaxOption> waterAmount;
     std::optional<MinMaxOption> milkFoamAmount;
+    std::optional<ItemsOption> grinderRatio;
 
     size_t statCounter{0};
 
-    Product(std::string&& name, std::string&& code, std::optional<ItemsOption>&& strength, std::optional<ItemsOption>&& temperature, std::optional<MinMaxOption>&& waterAmount, std::optional<MinMaxOption> milkFoamAmount) : name(std::move(name)),
+    /**
+     * Per-brew overrides. Any field left unset falls back to that option's own
+     * default from the machine file. Strength/temperature/grinderRatio take the
+     * raw hex Value string from the option's ITEM list (not the human-readable Name).
+     * waterAmount/milkFoamAmount take a raw value in the same units as that
+     * option's min/max/step (NOT milliliters).
+     **/
+    struct BrewOptions {
+        std::optional<std::string> strength;
+        std::optional<std::string> temperature;
+        std::optional<std::string> grinderRatio;
+        std::optional<uint8_t> waterAmount;
+        std::optional<uint8_t> milkFoamAmount;
+    };
+
+    Product(std::string&& name, std::string&& code, std::optional<ItemsOption>&& strength, std::optional<ItemsOption>&& temperature, std::optional<MinMaxOption>&& waterAmount, std::optional<MinMaxOption> milkFoamAmount, std::optional<ItemsOption>&& grinderRatio) : name(std::move(name)),
                                                                                                                                                                                                                               code(std::move(code)),
                                                                                                                                                                                                                               strength(std::move(strength)),
                                                                                                                                                                                                                               temperature(std::move(temperature)),
                                                                                                                                                                                                                               waterAmount(std::move(waterAmount)),
-                                                                                                                                                                                                                              milkFoamAmount(std::move(milkFoamAmount)) {}
+                                                                                                                                                                                                                              milkFoamAmount(std::move(milkFoamAmount)),
+                                                                                                                                                                                                                              grinderRatio(std::move(grinderRatio)) {}
 
-    [[nodiscard]] std::string to_bt_command() const;
+    [[nodiscard]] std::string to_bt_command(const BrewOptions& options = {}) const;
     [[nodiscard]] size_t code_to_size_t() const;
 } __attribute__((aligned(128)));
 
