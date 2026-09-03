@@ -1,7 +1,7 @@
-diff --git a/dbus/gattlib.c b/dbus/gattlib.c
-index 1534724..5c1d65b 100644
---- a/dbus/gattlib.c
-+++ b/dbus/gattlib.c
+diff --git i/dbus/gattlib.c w/dbus/gattlib.c
+index 1534724..5de2a14 100644
+--- i/dbus/gattlib.c
++++ w/dbus/gattlib.c
 @@ -11,7 +11,7 @@
  
  #include "gattlib_internal.h"
@@ -11,7 +11,53 @@ index 1534724..5c1d65b 100644
  
  static const char *m_dbus_error_unknown_object = "GDBus.Error:org.freedesktop.DBus.Error.UnknownObject";
  
-@@ -171,6 +171,7 @@ gatt_connection_t *gattlib_connect(void* adapter, const char *dst, unsigned long
+@@ -45,6 +45,11 @@ gboolean on_handle_device_property_change(
+ 					if (gattlib_has_valid_handler(&connection->disconnection)) {
+ 						gattlib_call_disconnection_handler(&connection->disconnection);
+ 					}
++					// If waiting in connection loop and disconnected, quit immediately
++					if (conn_context->connection_loop && g_main_loop_is_running(conn_context->connection_loop)) {
++						g_source_remove(conn_context->connection_timeout);
++						g_main_loop_quit(conn_context->connection_loop);
++					}
+ 				}
+ 			} else if (strcmp(key, "ServicesResolved") == 0) {
+ 				if (g_variant_get_boolean(value)) {
+@@ -61,6 +66,33 @@ gboolean on_handle_device_property_change(
+ 	return TRUE;
+ }
+ 
++static gboolean check_characteristics_ready(gpointer user_data)
++{
++	gatt_connection_t* connection = user_data;
++	gattlib_context_t* conn_context = connection->context;
++	GDBusObjectManager *device_manager = get_device_manager_from_adapter(conn_context->adapter);
++
++	GList *objects = g_dbus_object_manager_get_objects(device_manager);
++	for (GList *l = objects; l != NULL; l = l->next) {
++		GDBusObject *obj = l->data;
++		const char* path = g_dbus_object_get_object_path(G_DBUS_OBJECT(obj));
++		if (path && strstr(path, conn_context->device_object_path)) {
++			GDBusInterface *iface = g_dbus_object_manager_get_interface(device_manager, path, "org.bluez.GattCharacteristic1");
++			if (iface) {
++				g_object_unref(iface);
++				g_list_free_full(objects, g_object_unref);
++				GATTLIB_LOG(GATTLIB_INFO, ">>> FAST-PATH: Characteristics detected on D-Bus - quitting wait loop! <<<");
++				if (conn_context->connection_loop && g_main_loop_is_running(conn_context->connection_loop)) {
++					g_main_loop_quit(conn_context->connection_loop);
++				}
++				return G_SOURCE_REMOVE;
++			}
++		}
++	}
++	g_list_free_full(objects, g_object_unref);
++	return G_SOURCE_CONTINUE;
++}
++
+ void get_device_path_from_mac_with_adapter(OrgBluezAdapter1* adapter, const char *mac_address, char *object_path, size_t object_path_len)
+ {
+ 	char device_address_str[20 + 1];
+@@ -171,6 +203,7 @@ gatt_connection_t *gattlib_connect(void* adapter, const char *dst, unsigned long
  		connection);
  
  	error = NULL;
@@ -19,7 +65,7 @@ index 1534724..5c1d65b 100644
  	org_bluez_device1_call_connect_sync(device, NULL, &error);
  	if (error) {
  		if (strncmp(error->message, m_dbus_error_unknown_object, strlen(m_dbus_error_unknown_object)) == 0) {
-@@ -187,21 +188,41 @@ gatt_connection_t *gattlib_connect(void* adapter, const char *dst, unsigned long
+@@ -187,21 +220,43 @@ gatt_connection_t *gattlib_connect(void* adapter, const char *dst, unsigned long
  		goto FREE_DEVICE;
  	}
  
@@ -57,9 +103,11 @@ index 1534724..5c1d65b 100644
 +	if (!has_characteristics && !org_bluez_device1_get_services_resolved(device)) {
 +		conn_context->connection_loop = g_main_loop_new(NULL, 0);
 +
++		guint check_id = g_timeout_add(50, check_characteristics_ready, connection);
 +		conn_context->connection_timeout = g_timeout_add_seconds(CONNECT_TIMEOUT, stop_scan_func,
 +									 conn_context->connection_loop);
 +		g_main_loop_run(conn_context->connection_loop);
++		g_source_remove(check_id);
 +		g_main_loop_unref(conn_context->connection_loop);
 +		conn_context->connection_loop = NULL;
 +
