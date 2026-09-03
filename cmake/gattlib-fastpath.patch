@@ -1,0 +1,75 @@
+diff --git a/dbus/gattlib.c b/dbus/gattlib.c
+index 1534724..5c1d65b 100644
+--- a/dbus/gattlib.c
++++ b/dbus/gattlib.c
+@@ -11,7 +11,7 @@
+ 
+ #include "gattlib_internal.h"
+ 
+-#define CONNECT_TIMEOUT  4
++#define CONNECT_TIMEOUT  12
+ 
+ static const char *m_dbus_error_unknown_object = "GDBus.Error:org.freedesktop.DBus.Error.UnknownObject";
+ 
+@@ -171,6 +171,7 @@ gatt_connection_t *gattlib_connect(void* adapter, const char *dst, unsigned long
+ 		connection);
+ 
+ 	error = NULL;
++	org_bluez_device1_set_trusted(device, TRUE);
+ 	org_bluez_device1_call_connect_sync(device, NULL, &error);
+ 	if (error) {
+ 		if (strncmp(error->message, m_dbus_error_unknown_object, strlen(m_dbus_error_unknown_object)) == 0) {
+@@ -187,21 +188,41 @@ gatt_connection_t *gattlib_connect(void* adapter, const char *dst, unsigned long
+ 		goto FREE_DEVICE;
+ 	}
+ 
+-	// Wait for the property 'UUIDs' to be changed. We assume 'org.bluez.GattService1
+-	// and 'org.bluez.GattCharacteristic1' to be advertised at that moment.
+-	conn_context->connection_loop = g_main_loop_new(NULL, 0);
+-
+-	conn_context->connection_timeout = g_timeout_add_seconds(CONNECT_TIMEOUT, stop_scan_func,
+-								 conn_context->connection_loop);
+-	g_main_loop_run(conn_context->connection_loop);
+-	g_main_loop_unref(conn_context->connection_loop);
+-	// Set the attribute to NULL even if not required
+-	conn_context->connection_loop = NULL;
+-
+-	// Get list of objects belonging to Device Manager
++	// Get list of objects belonging to Device Manager:
+ 	device_manager = get_device_manager_from_adapter(conn_context->adapter);
+ 	conn_context->dbus_objects = g_dbus_object_manager_get_objects(device_manager);
+ 
++	bool has_characteristics = false;
++	for (GList *l = conn_context->dbus_objects; l != NULL; l = l->next) {
++		GDBusObject *obj = l->data;
++		const char* path = g_dbus_object_get_object_path(G_DBUS_OBJECT(obj));
++		if (path && strstr(path, conn_context->device_object_path)) {
++			GDBusInterface *iface = g_dbus_object_manager_get_interface(device_manager, path, "org.bluez.GattCharacteristic1");
++			if (iface) {
++				g_object_unref(iface);
++				has_characteristics = true;
++				break;
++			}
++		}
++	}
++
++	// Only wait for property 'UUIDs' if characteristics are not already known:
++	if (!has_characteristics && !org_bluez_device1_get_services_resolved(device)) {
++		conn_context->connection_loop = g_main_loop_new(NULL, 0);
++
++		conn_context->connection_timeout = g_timeout_add_seconds(CONNECT_TIMEOUT, stop_scan_func,
++									 conn_context->connection_loop);
++		g_main_loop_run(conn_context->connection_loop);
++		g_main_loop_unref(conn_context->connection_loop);
++		conn_context->connection_loop = NULL;
++
++		// Refresh objects after discovery
++		g_list_free_full(conn_context->dbus_objects, g_object_unref);
++		conn_context->dbus_objects = g_dbus_object_manager_get_objects(device_manager);
++	} else {
++		GATTLIB_LOG(GATTLIB_INFO, ">>> FAST-PATH: Characteristics already cached on D-Bus - skipping discovery loop! <<<");
++	}
++
+ 	// Set up a new GMainLoop to handle notification/indication events.
+ 	conn_context->connection_loop = g_main_loop_new(NULL, 0);
+ 	pthread_create(&conn_context->event_thread, NULL, glib_event_thread, &conn_context->connection_loop);

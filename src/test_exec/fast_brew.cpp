@@ -118,22 +118,29 @@ int main(int argc, char* argv[]) {
     // Extract dynamic key from advertisement if present:
     const std::vector<uint8_t>& manData = bleDevice.get_mam_data();
     if (!manData.empty()) {
+        SPDLOG_INFO("[TRACK:ADV_DATA] Manufacturer data ({} bytes): {}", 
+            manData.size(), jutta_bt_proto::to_hex_string(manData));
         if (manData.size() >= 16) {
             encryptionKey = manData[0];
         } else if (manData.size() >= 5) {
             encryptionKey = manData[4];
         }
     }
-    SPDLOG_INFO("Using encryption key: 0x{:02x}", encryptionKey);
+    SPDLOG_INFO("[TRACK:KEY] Dynamic Encryption Key: 0x{:02x} (dec {})", encryptionKey, encryptionKey);
 
     // 1. Keep-alive (stay_in_ble)
     static const std::vector<uint8_t> stayInBleCmd{0x00, 0x7F, 0x80};
-    bleDevice.write_without_response(P_MODE_UUID, encode_payload(stayInBleCmd, encryptionKey, false));
+    const std::vector<uint8_t> encodedStayInBle = encode_payload(stayInBleCmd, encryptionKey, false);
+    SPDLOG_INFO("[TRACK:TX_KEEP_ALIVE] Raw: {} | Encoded: {}", 
+        jutta_bt_proto::to_hex_string(stayInBleCmd), jutta_bt_proto::to_hex_string(encodedStayInBle));
+    bleDevice.write_without_response(P_MODE_UUID, encodedStayInBle);
 
     // 2. Transmit 2 Espressi brew command (code 12, 100_0 hopper, 30ml water, high temp)
     const std::string rawCmdHex = "001200000600000200000000000000000000";
     const std::vector<uint8_t> rawCmd = jutta_bt_proto::from_hex_string(rawCmdHex);
     const std::vector<uint8_t> encodedCmd = encode_payload(rawCmd, encryptionKey, true);
+    SPDLOG_INFO("[TRACK:TX_BREW_CMD] Raw: {} | Encoded: {}", 
+        jutta_bt_proto::to_hex_string(rawCmd), jutta_bt_proto::to_hex_string(encodedCmd));
 
     if (dryRun) {
         const auto t_ready = std::chrono::steady_clock::now();
@@ -141,7 +148,10 @@ int main(int argc, char* argv[]) {
         SPDLOG_INFO(">>> DRY-RUN: Machine connected, key loaded, keep-alive active in {:.3f}s! <<<", readySeconds);
         SPDLOG_INFO("Skipping command dispatch (dry-run). Disconnecting...");
         static const std::vector<uint8_t> disconnectCmd{0x00, 0x7F, 0x81};
-        bleDevice.write_without_response(P_MODE_UUID, encode_payload(disconnectCmd, encryptionKey, false));
+        const std::vector<uint8_t> encodedDisconnect = encode_payload(disconnectCmd, encryptionKey, false);
+        SPDLOG_INFO("[TRACK:TX_DISCONNECT] Raw: {} | Encoded: {}", 
+            jutta_bt_proto::to_hex_string(disconnectCmd), jutta_bt_proto::to_hex_string(encodedDisconnect));
+        bleDevice.write_without_response(P_MODE_UUID, encodedDisconnect);
         bleDevice.disconnect();
         return 0;
     }
