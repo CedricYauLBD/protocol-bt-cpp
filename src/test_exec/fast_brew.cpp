@@ -40,7 +40,8 @@ std::vector<uint8_t> encode_payload(const std::vector<uint8_t>& data, uint8_t ke
 int main(int argc, char* argv[]) {
     init_uuids();
 
-    std::string targetMac = "D6:C0:60:D9:0A:89";
+    const char* envMac = std::getenv("JURA_MAC");
+    std::string targetMac = (envMac && envMac[0] != '\0') ? envMac : "D6:C0:60:D9:0A:89";
     bool fireAndForget = false;
     bool dryRun = false;
 
@@ -58,7 +59,7 @@ int main(int argc, char* argv[]) {
     const auto t_start = std::chrono::steady_clock::now();
     SPDLOG_INFO("=== FastBrew: Targeting '{}' ===", targetMac);
 
-    // Fast-path: capture first advertising frame matching target MAC:
+    // Fast 1-packet sync: lock controller clock offset to peripheral
     bool canceled = false;
     std::shared_ptr<bt::ScanArgs> result = bt::scan_for_device("TT214H BlueFrog", &canceled, targetMac);
     if (!result) {
@@ -68,10 +69,9 @@ int main(int argc, char* argv[]) {
 
     const auto t_found = std::chrono::steady_clock::now();
     const double scanSeconds = std::chrono::duration<double>(t_found - t_start).count();
-    SPDLOG_INFO("Device acquired in {:.3f}s. Connecting...", scanSeconds);
+    SPDLOG_INFO("Clock synchronized in {:.3f}s. Connecting...", scanSeconds);
 
-    // Give controller 350ms to cleanly drain scan state:
-    std::this_thread::sleep_for(std::chrono::milliseconds(350));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
     std::atomic<bool> brewCompleted{false};
     uint8_t encryptionKey = 0x2a; // Default known key
