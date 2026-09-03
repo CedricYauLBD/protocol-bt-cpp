@@ -14,11 +14,12 @@ struct ScanArgs {
     std::mutex m;
     std::string name;
     std::regex nameRegex;
+    std::string targetMac;
     bool success{false};
     std::string addr;
 } __attribute__((aligned(128)));
 
-std::shared_ptr<ScanArgs> scan_for_device(const std::string& regexStr, const bool* canceled);
+std::shared_ptr<ScanArgs> scan_for_device(const std::string& regexStr, const bool* canceled, const std::string& targetMac = "");
 //---------------------------------------------------------------------------
 }  // namespace bt
 //---------------------------------------------------------------------------

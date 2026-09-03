@@ -8,10 +8,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <ios>
 #include <iostream>
+#include <thread>
 #include <logger/Logger.hpp>
 #include <vector>
 #include <bluetooth/sdp.h>
@@ -64,19 +66,27 @@ bool BLEDevice::connect() {
         return false;
     }
 
-    int result = gattlib_discover_primary(connection, &services, &serviceCount);
-    if (result != GATTLIB_SUCCESS) {
-        SPDLOG_ERROR("BLE device GATT discovery failed with error code {}.", result);
-        result = gattlib_disconnect(connection);
-        if (result != GATTLIB_SUCCESS) {
-            SPDLOG_ERROR("BLE device disconnect failed with error code {}.", result);
+    int result = GATTLIB_ERROR_INTERNAL;
+    // BlueZ resolves GATT services asynchronously on D-Bus after link establishment.
+    // Poll for services to appear rather than failing immediately if count is 0.
+    for (int retry = 0; retry < 25; retry++) {
+        if (services) {
+            free(services);
+            services = nullptr;
         }
-        connection = nullptr;
-        return false;
+        result = gattlib_discover_primary(connection, &services, &serviceCount);
+        if (result == GATTLIB_SUCCESS && serviceCount > 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    if (serviceCount <= 0) {
-        SPDLOG_ERROR("BLE device GATT discovery failed with no ({}) services found.", serviceCount);
+    if (result != GATTLIB_SUCCESS || serviceCount <= 0) {
+        if (result != GATTLIB_SUCCESS) {
+            SPDLOG_ERROR("BLE device GATT discovery failed with error code {}.", result);
+        } else {
+            SPDLOG_ERROR("BLE device GATT discovery failed with no ({}) services found.", serviceCount);
+        }
         result = gattlib_disconnect(connection);
         if (result != GATTLIB_SUCCESS) {
             SPDLOG_ERROR("BLE device disconnect failed with error code {}.", result);
@@ -86,7 +96,26 @@ bool BLEDevice::connect() {
     }
 
     SPDLOG_DEBUG("Discovered {} services.", serviceCount);
-    SPDLOG_DEBUG("BLEDevice connected.");
+
+    // Ensure BlueZ has populated GATT characteristics on D-Bus:
+    int charCount = 0;
+    gattlib_characteristic_t* chars = nullptr;
+    for (int retry = 0; retry < 20; retry++) {
+        if (chars) {
+            free(chars);
+            chars = nullptr;
+        }
+        if (gattlib_discover_char(connection, &chars, &charCount) == GATTLIB_SUCCESS && charCount > 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (chars) {
+        free(chars);
+        chars = nullptr;
+    }
+
+    SPDLOG_DEBUG("BLEDevice connected with {} characteristics.", charCount);
     gattlib_register_on_disconnect(connection, &BLEDevice::on_disconnected, this);
     gattlib_register_notification(connection, &BLEDevice::on_notification, this);
     connected = true;
@@ -94,10 +123,26 @@ bool BLEDevice::connect() {
     return true;
 }
 
+BLEDevice::~BLEDevice() {
+    disconnect();
+    if (services) {
+        free(services);
+        services = nullptr;
+        serviceCount = 0;
+    }
+}
+
 void BLEDevice::disconnect() {
     if (connection) {
         gattlib_disconnect(connection);
+        connection = nullptr;
     }
+    if (services) {
+        free(services);
+        services = nullptr;
+        serviceCount = 0;
+    }
+    connected = false;
 }
 
 bool BLEDevice::is_connected() const {
@@ -160,6 +205,23 @@ bool BLEDevice::write(const uuid_t& characteristic, const std::vector<uint8_t>& 
         return true;
     }
     SPDLOG_ERROR("Failed to write to characteristic '{}' with error code {}!", uuidStr.data(), result);
+    return false;
+}
+
+bool BLEDevice::write_without_response(const uuid_t& characteristic, const std::vector<uint8_t>& data) {
+    if (!connected) {
+        SPDLOG_WARN("Skipping write. Not connected.");
+        return false;
+    }
+    uuid_t uuid = characteristic;
+    std::array<char, MAX_LEN_UUID_STR + 1> uuidStr{};
+    gattlib_uuid_to_string(&uuid, uuidStr.data(), uuidStr.size());
+    int result = gattlib_write_without_response_char_by_uuid(connection, &uuid, data.data(), data.size());
+    if (result == GATTLIB_SUCCESS) {
+        SPDLOG_TRACE("Wrote without response {} bytes to characteristic '{}'.", data.size(), uuidStr.data());
+        return true;
+    }
+    SPDLOG_DEBUG("Write without response to '{}' returned code {}.", uuidStr.data(), result);
     return false;
 }
 

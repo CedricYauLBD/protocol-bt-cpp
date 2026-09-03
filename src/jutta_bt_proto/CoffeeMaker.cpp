@@ -123,16 +123,31 @@ void CoffeeMaker::analyze_man_data() {
 }
 
 void CoffeeMaker::parse_man_data(const std::vector<uint8_t>& data) {
-    manData.key = data[0];
-    manData.bfMajVer = data[1];
-    manData.bfMinVer = data[2];
-    manData.articleNumber = to_uint16_t_little_endian(data, 4);
-    manData.machineNumber = to_uint16_t_little_endian(data, 6);
-    manData.serialNumber = to_uint16_t_little_endian(data, 8);
-    manData.machineProdDate = to_ymd(data, 10);
-    manData.machineProdDateUCHI = to_ymd(data, 12);
-    manData.unusedSecond = data[14];
-    manData.statusBits = data[15];
+    if (data.empty()) {
+        return;
+    }
+
+    if (data.size() >= 16) {
+        manData.key = data[0];
+        manData.bfMajVer = data[1];
+        manData.bfMinVer = data[2];
+        manData.articleNumber = to_uint16_t_little_endian(data, 4);
+        manData.machineNumber = to_uint16_t_little_endian(data, 6);
+        manData.serialNumber = to_uint16_t_little_endian(data, 8);
+        manData.machineProdDate = to_ymd(data, 10);
+        manData.machineProdDateUCHI = to_ymd(data, 12);
+        manData.unusedSecond = data[14];
+        manData.statusBits = data[15];
+    } else if (data.size() >= 5) {
+        // SmartConnect dongle compact advertisement: 01 04 90 00 <key>
+        manData.bfMajVer = data[1];
+        manData.bfMinVer = data[2];
+        manData.key = data[4];
+        manData.articleNumber = 15274; // GIGA 6 default
+    } else {
+        manData.key = data[0];
+        manData.articleNumber = 15274;
+    }
 
     // Invoke the manufacturer data event handler:
     if (manDataChangedEventHandler) {
@@ -141,9 +156,14 @@ void CoffeeMaker::parse_man_data(const std::vector<uint8_t>& data) {
 
     // Load machine:
     if (!machines.contains(manData.articleNumber)) {
-        SPDLOG_ERROR("Coffee maker with article number '{}' not supported with the given machine files.", manData.articleNumber);
-        // NOLINTNEXTLINE(concurrency-mt-unsafe)
-        exit(-1);
+        if (machines.contains(15274)) {
+            SPDLOG_WARN("Article number '{}' not in database, defaulting to GIGA 6 (15274).", manData.articleNumber);
+            manData.articleNumber = 15274;
+        } else {
+            SPDLOG_ERROR("Coffee maker with article number '{}' not supported with the given machine files.", manData.articleNumber);
+            disconnect();
+            return;
+        }
     }
     const Machine* machine = &(machines.at(manData.articleNumber));
     joe = load_joe(machine);
@@ -324,7 +344,7 @@ void CoffeeMaker::write_tx(const std::vector<uint8_t>& data) {
     write(RELEVANT_UUIDS.UART_TX_CHARACTERISTIC_UUID, data, true, true);
 }
 
-bool CoffeeMaker::write(const uuid_t& characteristic, const std::vector<uint8_t>& data, bool encode, bool overrideKey) {
+bool CoffeeMaker::write(const uuid_t& characteristic, const std::vector<uint8_t>& data, bool encode, bool overrideKey, bool withoutResponse) {
     std::vector<uint8_t> encodedData = data;
     if (encode) {
         encodedData[0] = manData.key;
@@ -334,6 +354,9 @@ bool CoffeeMaker::write(const uuid_t& characteristic, const std::vector<uint8_t>
         encodedData = bt::encDecBytes(encodedData, manData.key);
     }
     SPDLOG_TRACE("Wrote: {}", to_hex_string(encodedData));
+    if (withoutResponse) {
+        return bleDevice.write_without_response(characteristic, encodedData);
+    }
     return bleDevice.write(characteristic, encodedData);
 }
 
@@ -343,18 +366,17 @@ void CoffeeMaker::shutdown() {
     write(RELEVANT_UUIDS.P_MODE_CHARACTERISTIC_UUID, command, true, false);
 }
 
-void CoffeeMaker::request_coffee() {
+bool CoffeeMaker::request_coffee() {
     SPDLOG_DEBUG("Requesting coffee...");
     static const std::string commandHexStr = "00030004280000020001000000000000";
-    // static const std::string commandHexStr = "77e93dd55381d3dba32bfa98a4a3faf9";  // Decoded: 2A03000414000001000100000000002A
     static const std::vector<uint8_t> command = from_hex_string(commandHexStr);
-    write(RELEVANT_UUIDS.START_PRODUCT_CHARACTERISTIC_UUID, command, true, false);
+    return write(RELEVANT_UUIDS.START_PRODUCT_CHARACTERISTIC_UUID, command, true, false);
 }
 
-void CoffeeMaker::request_coffee(const Product& product, const Product::BrewOptions& options) {
+bool CoffeeMaker::request_coffee(const Product& product, const Product::BrewOptions& options) {
     const std::string commandHexStr = product.to_bt_command(options);
     const std::vector<uint8_t> command = from_hex_string(commandHexStr);
-    write(RELEVANT_UUIDS.START_PRODUCT_CHARACTERISTIC_UUID, command, true, true);
+    return write(RELEVANT_UUIDS.START_PRODUCT_CHARACTERISTIC_UUID, command, true, true);
 }
 
 void CoffeeMaker::append_prod_stat_bits(std::vector<uint8_t> data) const {
@@ -426,9 +448,16 @@ void CoffeeMaker::on_disconnected() {
 
 bool CoffeeMaker::connect() {
     set_state(CoffeeMakerState::CONNECTING);
-    if (bleDevice.connect()) {
-        set_state(CoffeeMakerState::CONNECTED);
-        return true;
+    constexpr int MAX_CONNECT_ATTEMPTS = 3;
+    for (int attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt++) {
+        if (bleDevice.connect()) {
+            set_state(CoffeeMakerState::CONNECTED);
+            return true;
+        }
+        if (attempt < MAX_CONNECT_ATTEMPTS) {
+            SPDLOG_DEBUG("GATT connection attempt {} failed, retrying in 300ms...", attempt);
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        }
     }
     set_state(CoffeeMakerState::DISCONNECTED);
     SPDLOG_WARN("Failed to connect.");
@@ -439,14 +468,17 @@ void CoffeeMaker::disconnect() {
     if (state == CoffeeMakerState::CONNECTING || state == CoffeeMakerState::CONNECTED) {
         set_state(CoffeeMakerState::DISCONNECTING);
 
-        // Send the disconnect command:
-        static const std::vector<uint8_t> command{0x00, 0x7F, 0x81};
-        write(RELEVANT_UUIDS.P_MODE_CHARACTERISTIC_UUID, command, true, false);
+        // Join the heartbeat thread first so it does not compete for D-Bus:
+        if (heartbeatThread && heartbeatThread->joinable()) {
+            heartbeatThread->join();
+            heartbeatThread = std::nullopt;
+        }
 
-        // Join the heartbeat thread:
-        assert(heartbeatThread);
-        heartbeatThread->join();
-        heartbeatThread = std::nullopt;
+        // Send disconnect command without response (dongle severs physical link immediately):
+        static const std::vector<uint8_t> command{0x00, 0x7F, 0x81};
+        write(RELEVANT_UUIDS.P_MODE_CHARACTERISTIC_UUID, command, true, false, /*withoutResponse=*/true);
+
+        bleDevice.disconnect();
         set_state(CoffeeMakerState::DISCONNECTED);
         SPDLOG_INFO("Disconnected.");
     }

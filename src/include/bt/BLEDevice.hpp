@@ -45,7 +45,7 @@ class BLEDevice {
     BLEDevice(const BLEDevice&) = default;
     BLEDevice& operator=(BLEDevice&&) = delete;
     BLEDevice& operator=(const BLEDevice&) = delete;
-    ~BLEDevice() = default;
+    ~BLEDevice();
 
     bool connect();
     void disconnect();
@@ -54,6 +54,7 @@ class BLEDevice {
     void read_characteristics();
     void read_characteristic(const uuid_t& characteristic);
     bool write(const uuid_t& characteristic, const std::vector<uint8_t>& data);
+    bool write_without_response(const uuid_t& characteristic, const std::vector<uint8_t>& data);
     bool subscribe(const uuid_t& characteristic);
 
  private:

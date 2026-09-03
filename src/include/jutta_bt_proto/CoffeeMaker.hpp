@@ -3,6 +3,7 @@
 #include "bt/BLEDevice.hpp"
 #include "date/date.hpp"
 #include "jutta_bt_proto/CoffeeMakerLoader.hpp"
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -93,7 +94,7 @@ class CoffeeMaker {
 
  private:
     bt::BLEDevice bleDevice;
-    CoffeeMakerState state{CoffeeMakerState::DISCONNECTED};
+    std::atomic<CoffeeMakerState> state{CoffeeMakerState::DISCONNECTED};
     std::optional<std::thread> heartbeatThread{std::nullopt};
 
     const std::unordered_map<size_t, const Machine> machines;
@@ -164,8 +165,8 @@ class CoffeeMaker {
      * Before sending, the data will be encoded.
      **/
     void write_tx(const std::string& s);
-    void request_coffee();
-    void request_coffee(const Product& product, const Product::BrewOptions& options = {});
+    bool request_coffee();
+    bool request_coffee(const Product& product, const Product::BrewOptions& options = {});
     /**
      * Requests product or maintenance statistics.
      * On success the appropriate event gets triggered inside Joe.
@@ -216,7 +217,7 @@ class CoffeeMaker {
      * Allows you to specify wether the data should be encoded and the key inside the data should be overriden.
      * Usually you only want to set encode to true.
      **/
-    bool write(const uuid_t& characteristic, const std::vector<uint8_t>& data, bool encode, bool overrideKey);
+    bool write(const uuid_t& characteristic, const std::vector<uint8_t>& data, bool encode, bool overrideKey, bool withoutResponse = false);
     /**
      * Event handler that gets triggered when a characteristic got read.
      * data: The data read which might be encoded and has to be decoded.

@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -88,6 +89,7 @@ struct CliOverrides {
     std::optional<uint8_t> waterUnits;
     std::optional<std::string> strengthName;
     std::optional<std::string> tempName;
+    int count = 1;
 };
 
 // Resolves CLI overrides against a specific product's options. Returns nullopt (and
@@ -154,8 +156,8 @@ std::optional<jutta_bt_proto::Product::BrewOptions> resolve_brew_options(const j
 //   ./jura_brew "<product>"                        Show that product's configurable options (dry run, no brewing).
 //   ./jura_brew "<product>" [--hopper=NAME] [--water=UNITS] [--strength=NAME] [--temp=NAME]
 //                                                   Preview the exact raw command these overrides produce, still no brewing.
-//   ./jura_brew "<product>" --brew [...same overrides...] [--debug]
-//                                                   Actually brew.
+//   ./jura_brew "<product>" --brew [...same overrides...] [--count=N | --quattro] [--debug]
+//                                                   Actually brew (repeated N times on same connection if requested).
 //   --debug   Trace-level logging: prints every encoded byte string written to/read
 //             from each BLE characteristic, in addition to the computed command.
 int main(int argc, char** argv) {
@@ -171,12 +173,19 @@ int main(int argc, char** argv) {
     bool doBrew = false;
     CliOverrides cli;
 
+    std::string targetMac = "";
+
     for (int i = 1; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "--brew") {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            // print_usage(argv[0]); // assuming this would be defined
+            return 0;
+        } else if (arg == "--brew") {
             doBrew = true;
         } else if (arg == "--debug") {
             // Already handled above.
+        } else if (arg.rfind("--mac=", 0) == 0) {
+            targetMac = arg.substr(6);
         } else if (arg.rfind("--hopper=", 0) == 0) {
             cli.hopperName = arg.substr(9);
         } else if (arg.rfind("--water=", 0) == 0) {
@@ -185,98 +194,37 @@ int main(int argc, char** argv) {
             cli.strengthName = arg.substr(11);
         } else if (arg.rfind("--temp=", 0) == 0) {
             cli.tempName = arg.substr(7);
+        } else if (arg.rfind("--count=", 0) == 0) {
+            cli.count = std::max(1, std::stoi(arg.substr(8)));
+        } else if (arg == "--quattro") {
+            cli.count = 2;
         } else if (wantedProduct.empty()) {
             wantedProduct = to_lower(arg);
         }
     }
 
+    if (!targetMac.empty() && targetMac != "any") {
+        SPDLOG_INFO("Targeting coffee maker MAC: {}", targetMac);
+    }
     SPDLOG_INFO("Scanning for coffee maker...");
     bool canceled = false;
-    std::shared_ptr<bt::ScanArgs> result = bt::scan_for_device("TT214H BlueFrog", &canceled);
+    std::shared_ptr<bt::ScanArgs> result = bt::scan_for_device("TT214H BlueFrog", &canceled, targetMac);
     if (!result) {
         SPDLOG_ERROR("No coffee maker found.");
         return 1;
     }
 
+    // Allow BlueZ adapter to transition from active discovery to idle connect state:
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
     jutta_bt_proto::CoffeeMaker coffeeMaker(std::string{result->name}, std::string{result->addr});
 
-    std::atomic<bool> ready{false};
-    std::atomic<bool> brewed{false};
-    std::atomic<bool> failed{false};
-    // UNCONFIRMED completion signal: bit 31 in this machine's ALERTS table is named
-    // "enjoy product", which reads like Jura's classic "Enjoy your coffee!" message -
-    // a much better completion candidate than "coffee ready" (bit 13), which is
-    // misleading: it's already set at idle, before ever brewing anything, so it more
-    // likely means "system ready to brew" than "your drink is done". Not yet verified
-    // against a real timed brew - alert changes are logged live below so this can be
-    // confirmed/corrected by watching them against the actual machine.
-    std::atomic<bool> brewComplete{false};
+    std::shared_ptr<jutta_bt_proto::Joe> activeJoe;
+    std::atomic<bool> handshakeComplete{false};
+
     coffeeMaker.joeChangedEventHandler.append([&](const std::shared_ptr<jutta_bt_proto::Joe>& joe) {
-        if (wantedProduct.empty()) {
-            std::cout << "Available products on '" << joe->machine->name << "':\n";
-            for (const jutta_bt_proto::Product& p : joe->products) {
-                std::cout << "  code=" << p.code << "  " << p.name << "\n";
-            }
-            ready = true;
-            return;
-        }
-
-        const jutta_bt_proto::Product* match = nullptr;
-        for (const jutta_bt_proto::Product& p : joe->products) {
-            if (to_lower(p.name).find(wantedProduct) != std::string::npos) {
-                match = &p;
-                break;
-            }
-        }
-
-        if (!match) {
-            SPDLOG_ERROR("No product matching '{}' found.", wantedProduct);
-            failed = true;
-            ready = true;
-            return;
-        }
-
-        const bool hasOverrides = cli.hopperName || cli.waterUnits || cli.strengthName || cli.tempName;
-
-        if (!doBrew) {
-            print_product_detail(*match);
-            if (hasOverrides) {
-                if (auto options = resolve_brew_options(*match, cli)) {
-                    std::cout << "\nPreview (not sent): raw command = " << match->to_bt_command(*options) << "\n";
-                } else {
-                    failed = true;
-                }
-            }
-            ready = true;
-            return;
-        }
-
-        std::optional<jutta_bt_proto::Product::BrewOptions> options = resolve_brew_options(*match, cli);
-        if (!options) {
-            failed = true;
-            ready = true;
-            return;
-        }
-
-        // Log every alert change live, and watch for the completion candidate.
-        joe->alertsChangedEventHandler.append([&](const std::vector<const jutta_bt_proto::Alert*>& alerts) {
-            std::ostringstream oss;
-            bool first = true;
-            for (const jutta_bt_proto::Alert* a : alerts) {
-                if (!first) oss << ", ";
-                first = false;
-                oss << a->name;
-                if (to_lower(a->name) == "enjoy product") {
-                    brewComplete = true;
-                }
-            }
-            SPDLOG_INFO("Alerts now: [{}]", oss.str());
-        });
-
-        SPDLOG_INFO("Brewing '{}' with command: {}", match->name, match->to_bt_command(*options));
-        coffeeMaker.request_coffee(*match, *options);
-        brewed = true;
-        ready = true;
+        activeJoe = joe;
+        handshakeComplete = true;
     });
 
     if (!coffeeMaker.connect()) {
@@ -284,27 +232,202 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Wait for the machine identification (which carries the product list) and,
-    // if requested, for the brew command to have been sent.
-    for (size_t i = 0; i < 100 && !ready; i++) {
+    // Wait for the full handshake to finish (machine identification loaded & heartbeat started):
+    SPDLOG_INFO("Waiting for initial BLE handshake and machine profile...");
+    for (size_t i = 0; i < 100 && !handshakeComplete; i++) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    // Wait for the completion signal (see brewComplete comment above), with a
-    // generous safety timeout in case that signal turns out to be wrong.
-    if (brewed) {
-        constexpr int MAX_WAIT_SECONDS = 120;
-        SPDLOG_INFO("Waiting up to {}s for the machine to finish (watching for 'enjoy product')...", MAX_WAIT_SECONDS);
-        for (int i = 0; i < MAX_WAIT_SECONDS && !brewComplete; i++) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (!handshakeComplete || !activeJoe) {
+        SPDLOG_ERROR("Handshake timed out or machine profile not loaded.");
+        coffeeMaker.disconnect();
+        return 1;
+    }
+    SPDLOG_INFO("Handshake complete. Machine: '{}' Version: {}", activeJoe->machine->name, activeJoe->machine->version);
+
+    if (wantedProduct.empty()) {
+        std::cout << "Available products on '" << activeJoe->machine->name << "':\n";
+        for (const jutta_bt_proto::Product& p : activeJoe->products) {
+            std::cout << "  code=" << p.code << "  " << p.name << "\n";
         }
-        if (brewComplete) {
-            SPDLOG_INFO("Saw 'enjoy product' - treating as done.");
-        } else {
-            SPDLOG_WARN("Never saw 'enjoy product' within {}s - disconnecting anyway. Check the alert log above.", MAX_WAIT_SECONDS);
+        coffeeMaker.disconnect();
+        return 0;
+    }
+
+    const jutta_bt_proto::Product* match = nullptr;
+    for (const jutta_bt_proto::Product& p : activeJoe->products) {
+        if (to_lower(p.name).find(wantedProduct) != std::string::npos) {
+            match = &p;
+            break;
+        }
+    }
+
+    if (!match) {
+        SPDLOG_ERROR("No product matching '{}' found.", wantedProduct);
+        coffeeMaker.disconnect();
+        return 1;
+    }
+
+    const bool hasOverrides = cli.hopperName || cli.waterUnits || cli.strengthName || cli.tempName;
+
+    if (!doBrew) {
+        print_product_detail(*match);
+        if (hasOverrides) {
+            if (auto options = resolve_brew_options(*match, cli)) {
+                std::cout << "\nPreview (not sent): raw command = " << match->to_bt_command(*options) << "\n";
+            } else {
+                coffeeMaker.disconnect();
+                return 1;
+            }
+        }
+        coffeeMaker.disconnect();
+        return 0;
+    }
+
+    std::optional<jutta_bt_proto::Product::BrewOptions> options = resolve_brew_options(*match, cli);
+    if (!options) {
+        coffeeMaker.disconnect();
+        return 3;
+    }
+
+    constexpr int EXIT_SUCCESS_CODE = 0;
+    constexpr int EXIT_BREW_ABORTED_FAIL = 2;
+
+    std::mutex alertMutex;
+    std::optional<std::string> blockingAlertName;
+
+    auto is_fatal_blocking_alert = [](const jutta_bt_proto::Alert& a) -> bool {
+        const std::string nameLower = to_lower(a.name);
+        if (nameLower == "heating up" || nameLower == "please wait" || nameLower == "system filling" || nameLower == "coffee rinsing") {
+            return false;
+        }
+        if (a.type == "block") {
+            return true;
+        }
+        if (nameLower.find("no beans") != std::string::npos ||
+            nameLower.find("bean alert") != std::string::npos ||
+            nameLower.find("fill water") != std::string::npos ||
+            nameLower.find("empty grounds") != std::string::npos ||
+            nameLower.find("empty tray") != std::string::npos ||
+            nameLower.find("insert tray") != std::string::npos ||
+            nameLower.find("error status") != std::string::npos) {
+            return true;
+        }
+        return false;
+    };
+
+    std::atomic<bool> enjoySeen{false};
+    activeJoe->alertsChangedEventHandler.append([&](const std::vector<const jutta_bt_proto::Alert*>& alerts) {
+        std::ostringstream oss;
+        bool first = true;
+        bool hasEnjoy = false;
+        for (const jutta_bt_proto::Alert* a : alerts) {
+            if (!first) oss << ", ";
+            first = false;
+            oss << a->name;
+            if (to_lower(a->name) == "enjoy product") {
+                hasEnjoy = true;
+            }
+            if (is_fatal_blocking_alert(*a)) {
+                std::lock_guard<std::mutex> lock(alertMutex);
+                blockingAlertName = a->name;
+            }
+        }
+        SPDLOG_INFO("Alerts now: [{}]", oss.str());
+        if (hasEnjoy) {
+            enjoySeen = true;
+        }
+    });
+
+    const int count = cli.count;
+
+    for (int cycle = 1; cycle <= count; cycle++) {
+        if (count > 1) {
+            SPDLOG_INFO("==================== Brew {}/{} ====================", cycle, count);
+        }
+
+        // Verify machine is not currently in a fatal blocked state before requesting brew:
+        {
+            std::lock_guard<std::mutex> lock(alertMutex);
+            blockingAlertName.reset();
+        }
+        for (const auto* a : coffeeMaker.get_alerts()) {
+            if (is_fatal_blocking_alert(*a)) {
+                SPDLOG_ERROR("Machine is in blocked state '{}' before brew {}/{} — aborting.", a->name, cycle, count);
+                coffeeMaker.disconnect();
+                return EXIT_BREW_ABORTED_FAIL;
+            }
+        }
+
+        enjoySeen = false;
+        SPDLOG_INFO("Brewing '{}' (cycle {}/{}) with command: {}",
+                    match->name, cycle, count, match->to_bt_command(*options));
+        if (!coffeeMaker.request_coffee(*match, *options)) {
+            SPDLOG_ERROR("Failed to write brew command for cycle {}/{} to BLE characteristic!", cycle, count);
+            coffeeMaker.disconnect();
+            return EXIT_BREW_ABORTED_FAIL;
+        }
+
+        // Wait up to 120s for completion ('enjoy product')
+        constexpr int MAX_WAIT_SECONDS = 120;
+        SPDLOG_INFO("Waiting up to {}s for brew {}/{} to complete (watching for 'enjoy product')...",
+                    MAX_WAIT_SECONDS, cycle, count);
+        bool sawEnjoyThisCycle = false;
+        bool brewFailed = false;
+        for (int i = 0; i < MAX_WAIT_SECONDS; i++) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            {
+                std::lock_guard<std::mutex> lock(alertMutex);
+                if (blockingAlertName) {
+                    SPDLOG_ERROR("Machine reported blocking alert '{}' during brew {}/{} — aborting!", *blockingAlertName, cycle, count);
+                    brewFailed = true;
+                    break;
+                }
+            }
+            if (enjoySeen) {
+                sawEnjoyThisCycle = true;
+                break;
+            }
+            if (coffeeMaker.get_state() != jutta_bt_proto::CoffeeMakerState::CONNECTED) {
+                SPDLOG_ERROR("BLE connection lost during brew {}/{}!", cycle, count);
+                brewFailed = true;
+                break;
+            }
+        }
+
+        if (brewFailed || !sawEnjoyThisCycle) {
+            if (!brewFailed) {
+                SPDLOG_WARN("Never saw 'enjoy product' within {}s for brew {}/{} - aborting.",
+                            MAX_WAIT_SECONDS, cycle, count);
+            }
+            coffeeMaker.disconnect();
+            return EXIT_BREW_ABORTED_FAIL;
+        }
+        SPDLOG_INFO("Saw 'enjoy product' - brew {}/{} completed!", cycle, count);
+
+        // If there is another brew coming, wait for machine to clear 'enjoy product' and return to idle
+        if (cycle < count) {
+            SPDLOG_INFO("Brew {}/{} done. Waiting for machine to clear 'enjoy product' before next brew...", cycle, count);
+            for (int i = 0; i < 20; i++) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                bool stillEnjoy = false;
+                for (const auto* a : coffeeMaker.get_alerts()) {
+                    if (to_lower(a->name) == "enjoy product") {
+                        stillEnjoy = true;
+                        break;
+                    }
+                }
+                if (!stillEnjoy) {
+                    SPDLOG_INFO("Machine cleared 'enjoy product' alert.");
+                    break;
+                }
+            }
+            constexpr int SETTLE_SECONDS = 3;
+            SPDLOG_INFO("Pausing {}s for mechanical reset before cycle {}/{}...", SETTLE_SECONDS, cycle + 1, count);
+            std::this_thread::sleep_for(std::chrono::seconds(SETTLE_SECONDS));
         }
     }
 
     coffeeMaker.disconnect();
-    return failed ? 1 : 0;
+    return EXIT_SUCCESS_CODE;
 }
