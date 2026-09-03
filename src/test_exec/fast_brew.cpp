@@ -85,10 +85,10 @@ int main(int argc, char* argv[]) {
         [&](const std::vector<uint8_t>& data, const uuid_t& uuid) {
             if (gattlib_uuid_cmp(&uuid, &MACHINE_STATUS_UUID) == GATTLIB_SUCCESS) {
                 std::vector<uint8_t> alertVec = bt::encDecBytes(data, encryptionKey);
-                // Bit 35 = enjoy product
-                if (alertVec.size() > 5) {
-                    size_t offsetAbs = (35 >> 3) + 1;
-                    size_t offsetByte = 7 - (35 & 0b111);
+                // Bit 31 = enjoy product (Bit 35 was cappu rinse alert)
+                if (alertVec.size() > 4) {
+                    size_t offsetAbs = (31 >> 3) + 1;
+                    size_t offsetByte = 7 - (31 & 0b111);
                     if (offsetAbs < alertVec.size() && ((alertVec[offsetAbs] >> offsetByte) & 0b1)) {
                         brewCompleted = true;
                     }
