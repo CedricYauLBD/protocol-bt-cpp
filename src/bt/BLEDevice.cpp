@@ -61,61 +61,16 @@ const std::vector<uint8_t> BLEDevice::get_mam_data() {
 bool BLEDevice::connect() {
     assert(!connection);
     assert(!connected);
+    const auto t0 = std::chrono::steady_clock::now();
     connection = gattlib_connect(nullptr, addr.c_str(), GATTLIB_CONNECTION_OPTIONS_LEGACY_DEFAULT);
+    const auto t_connect = std::chrono::steady_clock::now();
     if (!connection) {
         return false;
     }
 
-    int result = GATTLIB_ERROR_INTERNAL;
-    // BlueZ resolves GATT services asynchronously on D-Bus after link establishment.
-    // Poll for services to appear rather than failing immediately if count is 0.
-    for (int retry = 0; retry < 60; retry++) {
-        if (services) {
-            free(services);
-            services = nullptr;
-        }
-        result = gattlib_discover_primary(connection, &services, &serviceCount);
-        if (result == GATTLIB_SUCCESS && serviceCount > 0) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    const double linkSecs = std::chrono::duration<double>(t_connect - t0).count();
+    SPDLOG_INFO("Physical link & D-Bus GATT established in {:.3f}s", linkSecs);
 
-    if (result != GATTLIB_SUCCESS || serviceCount <= 0) {
-        if (result != GATTLIB_SUCCESS) {
-            SPDLOG_ERROR("BLE device GATT discovery failed with error code {}.", result);
-        } else {
-            SPDLOG_ERROR("BLE device GATT discovery failed with no ({}) services found.", serviceCount);
-        }
-        result = gattlib_disconnect(connection);
-        if (result != GATTLIB_SUCCESS) {
-            SPDLOG_ERROR("BLE device disconnect failed with error code {}.", result);
-        }
-        connection = nullptr;
-        return false;
-    }
-
-    SPDLOG_DEBUG("Discovered {} services.", serviceCount);
-
-    // Ensure BlueZ has populated GATT characteristics on D-Bus:
-    int charCount = 0;
-    gattlib_characteristic_t* chars = nullptr;
-    for (int retry = 0; retry < 40; retry++) {
-        if (chars) {
-            free(chars);
-            chars = nullptr;
-        }
-        if (gattlib_discover_char(connection, &chars, &charCount) == GATTLIB_SUCCESS && charCount > 0) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    if (chars) {
-        free(chars);
-        chars = nullptr;
-    }
-
-    SPDLOG_DEBUG("BLEDevice connected with {} characteristics.", charCount);
     gattlib_register_on_disconnect(connection, &BLEDevice::on_disconnected, this);
     gattlib_register_notification(connection, &BLEDevice::on_notification, this);
     connected = true;

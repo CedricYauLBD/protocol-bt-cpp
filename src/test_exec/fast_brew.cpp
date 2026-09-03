@@ -70,8 +70,8 @@ int main(int argc, char* argv[]) {
     const double scanSeconds = std::chrono::duration<double>(t_found - t_start).count();
     SPDLOG_INFO("Device acquired in {:.3f}s. Connecting...", scanSeconds);
 
-    // Give controller 150ms to settle:
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    // Give controller 350ms to cleanly drain scan state:
+    std::this_thread::sleep_for(std::chrono::milliseconds(350));
 
     std::atomic<bool> brewCompleted{false};
     uint8_t encryptionKey = 0x2a; // Default known key
@@ -103,7 +103,7 @@ int main(int argc, char* argv[]) {
             connected = true;
             break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     }
 
     if (!connected) {
