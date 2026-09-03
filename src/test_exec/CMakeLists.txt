@@ -26,4 +26,12 @@ if(JUTTA_BT_PROTO_BUILD_TEST_EXEC)
     add_executable(${EXECUTABLE_NAME} ${EXECUTABLE_MAIN})
     target_link_libraries(${EXECUTABLE_NAME} PRIVATE logger bt jutta_bt_proto)
     set_property(SOURCE ${EXECUTABLE_MAIN} PROPERTY COMPILE_DEFINITIONS)
+
+    # Fast Brew (Instant Turbo Mode)
+    set(EXECUTABLE_NAME "fast_brew")
+    set(EXECUTABLE_MAIN "fast_brew.cpp")
+
+    add_executable(${EXECUTABLE_NAME} ${EXECUTABLE_MAIN})
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE logger bt jutta_bt_proto gattlib)
+    set_property(SOURCE ${EXECUTABLE_MAIN} PROPERTY COMPILE_DEFINITIONS)
 endif()

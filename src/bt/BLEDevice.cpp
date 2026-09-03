@@ -69,7 +69,7 @@ bool BLEDevice::connect() {
     int result = GATTLIB_ERROR_INTERNAL;
     // BlueZ resolves GATT services asynchronously on D-Bus after link establishment.
     // Poll for services to appear rather than failing immediately if count is 0.
-    for (int retry = 0; retry < 25; retry++) {
+    for (int retry = 0; retry < 60; retry++) {
         if (services) {
             free(services);
             services = nullptr;
@@ -100,7 +100,7 @@ bool BLEDevice::connect() {
     // Ensure BlueZ has populated GATT characteristics on D-Bus:
     int charCount = 0;
     gattlib_characteristic_t* chars = nullptr;
-    for (int retry = 0; retry < 20; retry++) {
+    for (int retry = 0; retry < 40; retry++) {
         if (chars) {
             free(chars);
             chars = nullptr;
